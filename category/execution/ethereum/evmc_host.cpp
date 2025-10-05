@@ -36,15 +36,12 @@ MONAD_NAMESPACE_BEGIN
 EvmcHostBase::EvmcHostBase(
     Chain const &chain, CallTracerBase &call_tracer,
     evmc_tx_context const &tx_context, BlockHashBuffer const &block_hash_buffer,
-    State &state, size_t const max_code_size, size_t const max_initcode_size,
-    std::function<bool()> const &revert_transaction) noexcept
+    State &state, std::function<bool()> const &revert_transaction) noexcept
     : block_hash_buffer_{block_hash_buffer}
     , tx_context_{tx_context}
     , chain_{chain}
     , state_{state}
     , call_tracer_{call_tracer}
-    , max_code_size_{max_code_size}
-    , max_initcode_size_{max_initcode_size}
     , revert_transaction_{revert_transaction}
 {
 }
@@ -161,7 +158,8 @@ void EvmcHostBase::emit_log(
         for (auto i = 0u; i < num_topics; ++i) {
             log.topics.push_back({topics[i]});
         }
-        state_.store_log(std::move(log));
+        state_.store_log(log);
+        call_tracer_.on_log(std::move(log));
         return;
     }
     catch (...) {

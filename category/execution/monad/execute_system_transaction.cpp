@@ -89,8 +89,7 @@ Result<Receipt> ExecuteSystemTransaction<traits>::operator()()
             tx,
             std::nullopt /* 0 base fee to pass validation */,
             std::nullopt /* 0 blob fee to pass validation */,
-            chain_.get_chain_id(),
-            chain_.get_max_code_size(header_.number, header_.timestamp)));
+            chain_.get_chain_id()));
     }
 
     {
@@ -194,7 +193,7 @@ Result<void> ExecuteSystemTransaction<traits>::execute_staking_syscall(
     // creates staking account in state if it doesn't exist
     state.add_to_balance(staking::STAKING_CA, 0);
 
-    staking::StakingContract contract(state);
+    staking::StakingContract contract(state, call_tracer_);
     if (MONAD_UNLIKELY(calldata.size() < 4)) {
         return staking::StakingError::InvalidInput;
     }

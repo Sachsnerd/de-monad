@@ -55,8 +55,7 @@ using BOOST_OUTCOME_V2_NAMESPACE::success;
 template <Traits traits>
 Result<void> static_validate_transaction(
     Transaction const &tx, std::optional<uint256_t> const &base_fee_per_gas,
-    std::optional<uint64_t> const &excess_blob_gas, uint256_t const &chain_id,
-    size_t const max_code_size)
+    std::optional<uint64_t> const &excess_blob_gas, uint256_t const &chain_id)
 {
     // EIP-155
     if (MONAD_LIKELY(tx.sc.chain_id.has_value())) {
@@ -68,6 +67,14 @@ Result<void> static_validate_transaction(
         }
     }
 
+    // EIP-4844
+    if constexpr (!traits::eip_4844_active()) {
+        if (MONAD_UNLIKELY(tx.type == TransactionType::eip4844)) {
+            return TransactionError::TypeNotSupported;
+        }
+    }
+
+    // TODO: remove the below logic once we fully migrate over to traits
     // EIP-2930 & EIP-2718
     if constexpr (traits::evm_rev() < EVMC_BERLIN) {
         if (MONAD_UNLIKELY(tx.type != TransactionType::legacy)) {
@@ -121,7 +128,8 @@ Result<void> static_validate_transaction(
     // EIP-3860
     if constexpr (traits::evm_rev() >= EVMC_SHANGHAI) {
         if (MONAD_UNLIKELY(
-                !tx.to.has_value() && tx.data.size() > 2 * max_code_size)) {
+                !tx.to.has_value() &&
+                tx.data.size() > traits::max_initcode_size())) {
             return TransactionError::InitCodeLimitExceeded;
         }
     }

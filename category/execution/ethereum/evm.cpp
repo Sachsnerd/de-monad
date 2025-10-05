@@ -87,8 +87,7 @@ MONAD_NAMESPACE_BEGIN
 
 template <Traits traits>
 evmc::Result deploy_contract_code(
-    State &state, Address const &address, evmc::Result result,
-    size_t const max_code_size) noexcept
+    State &state, Address const &address, evmc::Result result) noexcept
 {
     MONAD_ASSERT(result.status_code == EVMC_SUCCESS);
 
@@ -100,12 +99,13 @@ evmc::Result deploy_contract_code(
     }
     // EIP-170
     if constexpr (traits::evm_rev() >= EVMC_SPURIOUS_DRAGON) {
-        if (result.output_size > max_code_size) {
+        if (result.output_size > traits::max_code_size()) {
             return evmc::Result{EVMC_OUT_OF_GAS};
         }
     }
 
-    auto const deploy_cost = static_cast<int64_t>(result.output_size) * 200;
+    auto const deploy_cost =
+        static_cast<int64_t>(result.output_size) * traits::code_deposit_cost();
 
     if (result.gas_left < deploy_cost) {
         if constexpr (traits::evm_rev() == EVMC_FRONTIER) {
@@ -139,12 +139,14 @@ std::optional<evmc::Result> pre_call(evmc_message const &msg, State &state)
 {
     state.push();
 
+    bool const static_call = msg.flags & EVMC_STATIC;
+
     if (msg.kind != EVMC_DELEGATECALL) {
         if (MONAD_UNLIKELY(!sender_has_balance(state, msg))) {
             state.pop_reject();
             return evmc::Result{EVMC_INSUFFICIENT_BALANCE, msg.gas};
         }
-        else if (msg.flags != EVMC_STATIC) {
+        else if (!static_call) {
             transfer_balances(state, msg, msg.recipient);
         }
     }
@@ -155,7 +157,7 @@ std::optional<evmc::Result> pre_call(evmc_message const &msg, State &state)
             Address{msg.recipient} == Address{msg.code_address});
     }
 
-    if (msg.kind == EVMC_CALL && msg.flags & EVMC_STATIC) {
+    if (msg.kind == EVMC_CALL && static_call) {
         // eip-161
         state.touch(msg.recipient);
     }
@@ -186,7 +188,7 @@ void post_call(State &state, evmc::Result const &result)
 template <Traits traits>
 evmc::Result create(
     EvmcHost<traits> *const host, State &state, evmc_message const &msg,
-    size_t const max_code_size)
+    std::function<bool()> const &revert_transaction)
 {
     MONAD_ASSERT(msg.kind == EVMC_CREATE || msg.kind == EVMC_CREATE2);
 
@@ -256,14 +258,15 @@ evmc::Result create(
     };
 
     auto result = state.vm().execute_bytecode<traits>(
-        host->get_chain_params(),
-        *host,
-        &m_call,
-        {msg.input_data, msg.input_size});
+        *host, &m_call, {msg.input_data, msg.input_size});
 
     if (result.status_code == EVMC_SUCCESS) {
         result = deploy_contract_code<traits>(
-            state, contract_address, std::move(result), max_code_size);
+            state, contract_address, std::move(result));
+    }
+
+    if (msg.depth == 0 && revert_transaction()) {
+        result.status_code = EVMC_REVERT;
     }
 
     if (result.status_code == EVMC_SUCCESS) {
@@ -307,15 +310,15 @@ evmc::Result call(
     }
 
     evmc::Result result;
-    if (auto maybe_result = check_call_precompile<traits>(state, msg);
+    if (auto maybe_result =
+            check_call_precompile<traits>(state, call_tracer, msg);
         maybe_result.has_value()) {
         result = std::move(maybe_result.value());
     }
     else {
         auto const hash = state.get_code_hash(msg.code_address);
         auto const &code = state.read_code(hash);
-        result = state.vm().execute<traits>(
-            host->get_chain_params(), *host, &msg, hash, code);
+        result = state.vm().execute<traits>(*host, &msg, hash, code);
     }
 
     if (msg.depth == 0 && revert_transaction()) {

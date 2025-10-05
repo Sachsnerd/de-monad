@@ -15,32 +15,31 @@
 
 #pragma once
 
+#include <category/core/bytes.hpp>
 #include <category/core/config.hpp>
+#include <category/core/int.hpp>
+#include <category/execution/ethereum/core/address.hpp>
+#include <category/vm/evm/monad/revision.h>
 
-#include <array>
-#include <cstddef>
+#include <evmc/evmc.h>
+
+#include <cstdint>
 
 MONAD_NAMESPACE_BEGIN
 
-namespace detail
-{
-    template <class T, size_t... Is, class... Args>
-    constexpr std::array<T, sizeof...(Is)>
-    make_array_impl(std::index_sequence<Is...>, Args &&...args)
-    {
-        return {{((void)Is, T{std::forward<Args>(args)...})...}};
-    }
-}
-/*! \brief Return a `std::array<T, N>` with each item constructed
-from `args...`. Supports immovable types.
-*/
-template <class T, size_t N, class... Args>
-    requires(std::is_constructible_v<T, Args...>)
-constexpr std::array<T, N>
-make_array(std::piecewise_construct_t, Args &&...args)
-{
-    return detail::make_array_impl<T>(
-        std::make_index_sequence<N>(), std::forward<Args>(args)...);
-}
+struct MonadChainContext;
+class State;
+struct Transaction;
+
+bool revert_monad_transaction(
+    monad_revision, evmc_revision, Address const &sender, Transaction const &,
+    uint256_t const &base_fee_per_gas, uint64_t i, State &,
+    MonadChainContext const &);
+
+bool can_sender_dip_into_reserve(
+    Address const &sender, uint64_t i, bytes32_t const &orig_code_hash,
+    MonadChainContext const &);
+
+uint256_t get_max_reserve(monad_revision, Address const &);
 
 MONAD_NAMESPACE_END

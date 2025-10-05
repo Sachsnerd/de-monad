@@ -11,9 +11,12 @@
                     bugprone-*,
                     -bugprone-branch-clone,
                     -bugprone-easily-swappable-parameters,
+                    -bugprone-implicit-widening-of-multiplication-result,
                     -bugprone-unchecked-optional-access,
                     -bugprone-unhandled-self-assignment,
                     clang-analyzer*,
+                    -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+                    -clang-analyzer-security.insecureAPI.strcpy,
                     google-build-explicit-make-pair,
                     google-explicit-constructor,
                     llvm-include-order,
@@ -65,5 +68,7 @@
       value:        1
     - key:          modernize-loop-convert.UseCxx20ReverseRanges
       value:        false
+    - key:          misc-include-cleaner.IgnoreHeaders
+      value:        'quill/.*'
 ...
 

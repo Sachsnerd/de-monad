@@ -22,8 +22,8 @@
 #include <category/core/config.hpp>
 #include <category/core/fiber/priority_pool.hpp>
 #include <category/core/likely.h>
-#include <category/core/procfs/statm.h>
 #include <category/core/monad_exception.hpp>
+#include <category/core/procfs/statm.h>
 #include <category/execution/ethereum/block_hash_buffer.hpp>
 #include <category/execution/ethereum/chain/chain_config.h>
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
@@ -415,7 +415,11 @@ try {
             ? std::numeric_limits<uint64_t>::max()
             : block_num + nblocks - 1;
 
-    vm::VM vm;
+    // If call tracing is enabled, we need to correspondingly disable native
+    // compilation: the compiler does not expose the full fidelity of error exit
+    // codes that are required to serve RPC responses that include call traces.
+    vm::VM vm{!trace_calls};
+
     DbCache db_cache = ctx ? DbCache{*ctx} : DbCache{triedb};
     auto const result = [&] {
         switch (chain_config) {

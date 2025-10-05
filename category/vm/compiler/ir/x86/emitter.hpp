@@ -18,6 +18,7 @@
 #include <category/vm/compiler/ir/basic_blocks.hpp>
 #include <category/vm/compiler/ir/x86/types.hpp>
 #include <category/vm/compiler/ir/x86/virtual_stack.hpp>
+#include <category/vm/evm/opcodes.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/interpreter/intercode.hpp>
 #include <category/vm/runtime/detail.hpp>
@@ -43,6 +44,11 @@ namespace monad::vm::compiler::native
                 asmjit::Error, char const *message,
                 asmjit::BaseEmitter *) override;
         };
+
+        // Arbitrary work threshold for when to emit gas check.
+        // Needs to be big enough to make the gas check insignificant,
+        // and small enough to avoid exploitation of the optimization.
+        static constexpr int64_t STATIC_WORK_GAS_CHECK_THRESHOLD = 1000;
 
         enum class LocationType
         {
@@ -112,6 +118,7 @@ namespace monad::vm::compiler::native
         };
 
         using Gpq256 = std::array<asmjit::x86::Gpq, 4>;
+        using Mem256 = std::array<asmjit::x86::Mem, 4>;
         using Imm256 = std::array<asmjit::Imm, 4>;
 
         using Operand =
@@ -133,7 +140,7 @@ namespace monad::vm::compiler::native
         public:
             template <typename... Args>
             RuntimeImpl(
-                Emitter *e, int32_t remaining_base_gas, bool spill_avx,
+                Emitter *e, int64_t remaining_base_gas, bool spill_avx,
                 void (*f)(Args...))
                 : em_{e}
                 , remaining_base_gas_{remaining_base_gas}
@@ -167,7 +174,7 @@ namespace monad::vm::compiler::native
 
             Emitter *em_;
             std::vector<StackElemRef> explicit_args_;
-            int32_t remaining_base_gas_;
+            int64_t remaining_base_gas_;
             bool spill_avx_;
             void *runtime_fun_;
             size_t arg_count_;
@@ -181,7 +188,7 @@ namespace monad::vm::compiler::native
         {
         public:
             Runtime(
-                Emitter *e, int32_t remaining_base_gas, bool spill_avx,
+                Emitter *e, int64_t remaining_base_gas, bool spill_avx,
                 void (*f)(Args...))
                 : RuntimeImpl(e, remaining_base_gas, spill_avx, f)
             {
@@ -227,6 +234,11 @@ namespace monad::vm::compiler::native
         void swap_general_regs(StackElem &, StackElem &);
         void swap_general_reg_indices(GeneralReg, uint8_t, uint8_t);
 
+        uint32_t exponential_constant_fold_counter() const
+        {
+            return exponential_constant_fold_counter_;
+        }
+
         ////////// Core emit functionality //////////
 
         [[noreturn]] void fail_with_error(asmjit::Error);
@@ -235,8 +247,8 @@ namespace monad::vm::compiler::native
         void add_jump_dest(byte_offset);
         [[nodiscard]]
         bool begin_new_block(basic_blocks::Block const &);
-        void gas_decrement_no_check(int32_t);
-        void gas_decrement_check_non_negative(int32_t);
+        void gas_decrement_static_work(int64_t);
+        void gas_decrement_unbounded_work(int64_t);
         void spill_caller_save_regs(bool spill_avx);
         void spill_all_caller_save_general_regs();
         void spill_avx_reg_range(uint8_t start);
@@ -303,7 +315,7 @@ namespace monad::vm::compiler::native
         void iszero();
         void not_();
 
-        void gas(int32_t remaining_base_gas);
+        void gas(int64_t remaining_base_gas);
 
         void address();
         void caller();
@@ -329,8 +341,7 @@ namespace monad::vm::compiler::native
         void mstore8();
 
         // Revision dependent instructions
-        template <Traits traits>
-        void mul(int32_t remaining_base_gas)
+        void mul(int64_t remaining_base_gas)
         {
             if (mul_optimized()) {
                 return;
@@ -339,7 +350,7 @@ namespace monad::vm::compiler::native
         }
 
         template <Traits traits>
-        void udiv(int32_t remaining_base_gas)
+        void udiv(int64_t remaining_base_gas)
         {
             if (div_optimized<false>()) {
                 return;
@@ -348,7 +359,7 @@ namespace monad::vm::compiler::native
         }
 
         template <Traits traits>
-        void sdiv(int32_t remaining_base_gas)
+        void sdiv(int64_t remaining_base_gas)
         {
             if (div_optimized<true>()) {
                 return;
@@ -357,7 +368,7 @@ namespace monad::vm::compiler::native
         }
 
         template <Traits traits>
-        void umod(int32_t remaining_base_gas)
+        void umod(int64_t remaining_base_gas)
         {
             if (mod_optimized<false>()) {
                 return;
@@ -366,7 +377,7 @@ namespace monad::vm::compiler::native
         }
 
         template <Traits traits>
-        void smod(int32_t remaining_base_gas)
+        void smod(int64_t remaining_base_gas)
         {
             if (mod_optimized<true>()) {
                 return;
@@ -377,7 +388,7 @@ namespace monad::vm::compiler::native
         bool addmod_opt();
 
         template <Traits traits>
-        void addmod(int32_t remaining_base_gas)
+        void addmod(int64_t remaining_base_gas)
         {
             if (addmod_opt()) {
                 return;
@@ -388,7 +399,7 @@ namespace monad::vm::compiler::native
         bool mulmod_opt();
 
         template <Traits traits>
-        void mulmod(int32_t remaining_base_gas)
+        void mulmod(int64_t remaining_base_gas)
         {
             if (mulmod_opt()) {
                 return;
@@ -396,180 +407,200 @@ namespace monad::vm::compiler::native
             call_runtime(remaining_base_gas, true, runtime::mulmod);
         }
 
+        template <typename T, size_t N>
+        void array_byte_width(std::array<T, N> const &);
+
+        bool exp_optimized(int64_t, uint32_t);
+
         template <Traits traits>
-        void exp(int32_t remaining_base_gas)
+        void exp(int64_t remaining_base_gas)
         {
+            // It is assumed that the work of an optimized EXP does not exceed
+            // the static work cost of the EXP instruction. At present, the work
+            // of an optimized EXP is roughly at most the work of a MUL
+            // instruction.
+            static_assert(opcode_table<traits>[MUL].name == "MUL");
+            static_assert(opcode_table<traits>[EXP].name == "EXP");
+            static_assert(
+                opcode_table<traits>[EXP].min_gas >=
+                opcode_table<traits>[MUL].min_gas);
+
+            if (exp_optimized(
+                    remaining_base_gas,
+                    runtime::exp_dynamic_gas_cost_multiplier<traits>())) {
+                return;
+            }
             call_runtime(remaining_base_gas, true, runtime::exp<traits>);
         }
 
         template <Traits traits>
-        void sha3(int32_t remaining_base_gas)
+        void sha3(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::sha3);
         }
 
         template <Traits traits>
-        void balance(int32_t remaining_base_gas)
+        void balance(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::balance<traits>);
         }
 
         template <Traits traits>
-        void calldatacopy(int32_t remaining_base_gas)
+        void calldatacopy(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::calldatacopy);
         }
 
         template <Traits traits>
-        void codecopy(int32_t remaining_base_gas)
+        void codecopy(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::codecopy);
         }
 
         template <Traits traits>
-        void extcodesize(int32_t remaining_base_gas)
+        void extcodesize(int64_t remaining_base_gas)
         {
             call_runtime(
                 remaining_base_gas, true, runtime::extcodesize<traits>);
         }
 
         template <Traits traits>
-        void extcodecopy(int32_t remaining_base_gas)
+        void extcodecopy(int64_t remaining_base_gas)
         {
             call_runtime(
                 remaining_base_gas, true, runtime::extcodecopy<traits>);
         }
 
         template <Traits traits>
-        void returndatacopy(int32_t remaining_base_gas)
+        void returndatacopy(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::returndatacopy);
         }
 
         template <Traits traits>
-        void extcodehash(int32_t remaining_base_gas)
+        void extcodehash(int64_t remaining_base_gas)
         {
             call_runtime(
                 remaining_base_gas, true, runtime::extcodehash<traits>);
         }
 
         template <Traits traits>
-        void blockhash(int32_t remaining_base_gas)
+        void blockhash(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::blockhash);
         }
 
         template <Traits traits>
-        void selfbalance(int32_t remaining_base_gas)
+        void selfbalance(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::selfbalance);
         }
 
         template <Traits traits>
-        void blobhash(int32_t remaining_base_gas)
+        void blobhash(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::blobhash);
         }
 
         template <Traits traits>
-        void sload(int32_t remaining_base_gas)
+        void sload(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::sload<traits>);
         }
 
         template <Traits traits>
-        void sstore(int32_t remaining_base_gas)
+        void sstore(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::sstore<traits>);
         }
 
         template <Traits traits>
-        void tload(int32_t remaining_base_gas)
+        void tload(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::tload);
         }
 
         template <Traits traits>
-        void tstore(int32_t remaining_base_gas)
+        void tstore(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::tstore);
         }
 
         template <Traits traits>
-        void mcopy(int32_t remaining_base_gas)
+        void mcopy(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::mcopy);
         }
 
         template <Traits traits>
-        void log0(int32_t remaining_base_gas)
+        void log0(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::log0);
         }
 
         template <Traits traits>
-        void log1(int32_t remaining_base_gas)
+        void log1(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::log1);
         }
 
         template <Traits traits>
-        void log2(int32_t remaining_base_gas)
+        void log2(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::log2);
         }
 
         template <Traits traits>
-        void log3(int32_t remaining_base_gas)
+        void log3(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::log3);
         }
 
         template <Traits traits>
-        void log4(int32_t remaining_base_gas)
+        void log4(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::log4);
         }
 
         template <Traits traits>
-        void create(int32_t remaining_base_gas)
+        void create(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::create<traits>);
         }
 
         template <Traits traits>
-        void call(int32_t remaining_base_gas)
+        void call(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::call<traits>);
         }
 
         template <Traits traits>
-        void callcode(int32_t remaining_base_gas)
+        void callcode(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::callcode<traits>);
         }
 
         template <Traits traits>
-        void delegatecall(int32_t remaining_base_gas)
+        void delegatecall(int64_t remaining_base_gas)
         {
             call_runtime(
                 remaining_base_gas, true, runtime::delegatecall<traits>);
         }
 
         template <Traits traits>
-        void create2(int32_t remaining_base_gas)
+        void create2(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::create2<traits>);
         }
 
         template <Traits traits>
-        void staticcall(int32_t remaining_base_gas)
+        void staticcall(int64_t remaining_base_gas)
         {
             call_runtime(remaining_base_gas, true, runtime::staticcall<traits>);
         }
 
         template <Traits traits>
-        void selfdestruct(int32_t remaining_base_gas)
+        void selfdestruct(int64_t remaining_base_gas)
         {
             runtime_store_input_stack(*bytecode_size_);
             call_runtime(
@@ -578,7 +609,7 @@ namespace monad::vm::compiler::native
 
         template <typename... Args>
         void call_runtime(
-            int32_t remaining_base_gas, bool spill_avx, void (*f)(Args...))
+            int64_t remaining_base_gas, bool spill_avx, void (*f)(Args...))
         {
             Runtime<Args...>(this, remaining_base_gas, spill_avx, f).call();
         }
@@ -624,6 +655,11 @@ namespace monad::vm::compiler::native
 
         template <typename... LiveSet>
         bool is_live(GeneralReg, std::tuple<LiveSet...> const &);
+
+        void gas_decrement_no_check(int64_t);
+        void gas_decrement_no_check(asmjit::x86::Gpq);
+
+        bool accumulate_static_work(int64_t work_cost);
 
         bool block_prologue(basic_blocks::Block const &);
         template <bool preserve_eflags>
@@ -816,21 +852,27 @@ namespace monad::vm::compiler::native
             asmjit::x86::Gpq dst1, asmjit::x86::Gpq dst2, LeftOpType left,
             asmjit::x86::Gpq right);
         template <bool Is32Bit, typename LeftOpType>
-        void imul_by_gpq(
+        void gpr_mul_by_gpq(
             asmjit::x86::Gpq dst, LeftOpType left, asmjit::x86::Gpq right);
         template <bool Is32Bit, typename LeftOpType>
-        void
-        imul_by_int32(asmjit::x86::Gpq dst, LeftOpType left, int32_t right);
+        void gpr_mul_by_uint64_via_shl(
+            asmjit::x86::Gpq dst, LeftOpType left, uint64_t right);
         template <bool Is32Bit, typename LeftOpType>
-        void imul_by_rax_or_int32(
-            asmjit::x86::Gpq dst, LeftOpType left, std::optional<int32_t>);
+        void gpr_mul_by_int32_via_imul(
+            asmjit::x86::Gpq dst, LeftOpType left, int32_t right);
+        template <bool Is32Bit, typename LeftOpType>
+        void gpr_mul_by_uint64(
+            asmjit::x86::Gpq dst, LeftOpType left, uint64_t right);
+        template <bool Is32Bit, typename LeftOpType>
+        void gpr_mul_by_rax_or_uint64(
+            asmjit::x86::Gpq dst, LeftOpType left, std::optional<uint64_t>);
         void mul_with_bit_size_by_rax(
             size_t bit_size, asmjit::x86::Gpq const *dst, Operand const &left,
-            std::optional<int32_t> value_of_rax);
+            std::optional<uint64_t> value_of_rax);
         template <bool Has32Bit>
         void mul_with_bit_size_and_has_32_bit_by_rax(
             size_t bit_size, asmjit::x86::Gpq const *dst, Operand const &left,
-            std::optional<int32_t> value_of_rax);
+            std::optional<uint64_t> value_of_rax);
         template <typename... LiveSet>
         StackElemRef mul_with_bit_size(
             size_t bit_size, StackElemRef, MulEmitter::RightMulArg,
@@ -880,22 +922,38 @@ namespace monad::vm::compiler::native
         void slt(StackElemRef dst, StackElemRef src);
 
         template <typename... LiveSet>
-        void cmp_stack_elem_to_uint16(
+        void destructive_mov_stack_elem_to_bounded_rax(
             StackElemRef, uint16_t, std::tuple<LiveSet...> const &);
 
         void
         byte_literal_ix_stack_offset_src(StackElemRef ix, StackElemRef src);
-        void byte_non_literal_ix_literal_or_stack_offset_src(
-            StackElemRef ix, StackElemRef src);
-        void byte_literal_ix_general_reg_src(StackElemRef ix, StackElemRef src);
-        void
-        byte_non_literal_ix_general_reg_src(StackElemRef ix, StackElemRef src);
-        void byte_literal_ix_avx_reg_src(StackElemRef ix, StackElemRef src);
-        void byte_non_literal_ix_avx_reg_src(StackElemRef ix, StackElemRef src);
-
-        void signextend_literal_ix(uint256_t const &ix, StackElemRef src);
         template <typename... LiveSet>
-        void signextend_stack_elem_ix(
+        void byte_non_literal_ix_literal_or_stack_offset_src(
+            StackElemRef ix, StackElemRef src, std::tuple<LiveSet...> const &);
+        template <typename... LiveSet>
+        void byte_literal_ix_general_reg_src(
+            StackElemRef ix, StackElemRef src, std::tuple<LiveSet...> const &);
+        template <typename... LiveSet>
+        void byte_non_literal_ix_general_reg_src(
+            StackElemRef ix, StackElemRef src, std::tuple<LiveSet...> const &);
+        void byte_literal_ix_avx_reg_src(StackElemRef ix, StackElemRef src);
+        template <typename... LiveSet>
+        void byte_non_literal_ix_avx_reg_src(
+            StackElemRef ix, StackElemRef src, std::tuple<LiveSet...> const &);
+
+        void signextend_avx_reg_by_int8(int8_t, StackElemRef);
+        template <typename... LiveSet>
+        void signextend_general_reg_or_stack_offset_by_int8(
+            int8_t, StackElemRef, std::tuple<LiveSet...> const &);
+        template <typename... LiveSet>
+        void signextend_by_literal_ix(
+            uint256_t const &ix, StackElemRef src,
+            std::tuple<LiveSet...> const &);
+        void signextend_avx_reg_by_bounded_rax(StackElemRef);
+        void signextend_general_reg_by_bounded_rax(StackElemRef src);
+        void signextend_stack_offset_or_literal_by_bounded_rax(StackElemRef);
+        template <typename... LiveSet>
+        void signextend_by_non_literal(
             StackElemRef ix, StackElemRef src, std::tuple<LiveSet...> const &);
 
         enum class ShiftType
@@ -1009,6 +1067,10 @@ namespace monad::vm::compiler::native
         void add_mod2(StackElemRef left, StackElemRef right, size_t exp);
         void mul_mod2(StackElemRef left, StackElemRef right, size_t exp);
 
+        void exp_emit_gas_decrement_by_literal(uint256_t, uint32_t);
+        void exp_emit_gas_decrement_by_stack_elem(StackElemRef, uint32_t);
+        void stack_elem_byte_width(StackElemRef);
+
         using ModOpType = uint256_t (*)(
             uint256_t const &, uint256_t const &, uint256_t const &);
         using ModOpByMaskType =
@@ -1038,5 +1100,7 @@ namespace monad::vm::compiler::native
         std::vector<std::tuple<asmjit::Label, asmjit::x86::Mem, asmjit::Label>>
             load_bounded_le_handlers_;
         std::vector<std::pair<asmjit::Label, std::string>> debug_messages_;
+        uint32_t exponential_constant_fold_counter_;
+        int64_t accumulated_static_work_;
     };
 }

@@ -23,9 +23,9 @@
 #include <category/execution/ethereum/chain/ethereum_mainnet.hpp>
 #include <category/execution/ethereum/core/rlp/transaction_rlp.hpp>
 #include <category/execution/ethereum/core/transaction.hpp>
-#include <category/vm/evm/switch_traits.hpp>
 #include <category/execution/ethereum/transaction_gas.hpp>
 #include <category/execution/ethereum/validate_transaction.hpp>
+#include <category/vm/evm/switch_traits.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <monad/test/config.hpp>
 
@@ -88,7 +88,7 @@ template <Traits traits>
 void process_transaction(Transaction const &txn, nlohmann::json const &expected)
 {
     if (auto const result = static_validate_transaction<traits>(
-            txn, std::nullopt, std::nullopt, 1, MAX_CODE_SIZE_EIP170);
+            txn, std::nullopt, std::nullopt, 1);
         result.has_error()) {
         EXPECT_TRUE(expected.contains("exception"));
     }

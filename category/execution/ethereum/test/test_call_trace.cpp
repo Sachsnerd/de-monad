@@ -151,13 +151,7 @@ TEST(CallTrace, execute_success)
     std::vector<CallFrame> call_frames;
     CallTracer call_tracer{tx, call_frames};
     EvmcHost<EvmTraits<EVMC_SHANGHAI>> host{
-        chain,
-        call_tracer,
-        tx_context,
-        buffer,
-        s,
-        MAX_CODE_SIZE_EIP170,
-        MAX_INITCODE_SIZE_EIP3860};
+        chain, call_tracer, tx_context, buffer, s};
 
     auto const result =
         ExecuteTransactionNoValidation<EvmTraits<EVMC_SHANGHAI>>(
@@ -178,6 +172,7 @@ TEST(CallTrace, execute_success)
         .gas_used = 0x5208,
         .status = EVMC_SUCCESS,
         .depth = 0,
+        .logs = std::vector<CallFrame::Log>{},
     };
 
     EXPECT_EQ(call_frames[0], expected);
@@ -229,13 +224,7 @@ TEST(CallTrace, execute_reverted_insufficient_balance)
     std::vector<CallFrame> call_frames;
     CallTracer call_tracer{tx, call_frames};
     EvmcHost<EvmTraits<EVMC_SHANGHAI>> host{
-        chain,
-        call_tracer,
-        tx_context,
-        buffer,
-        s,
-        MAX_CODE_SIZE_EIP170,
-        MAX_INITCODE_SIZE_EIP3860};
+        chain, call_tracer, tx_context, buffer, s};
 
     auto const result =
         ExecuteTransactionNoValidation<EvmTraits<EVMC_SHANGHAI>>(
@@ -256,6 +245,7 @@ TEST(CallTrace, execute_reverted_insufficient_balance)
         .gas_used = 0x5208,
         .status = EVMC_INSUFFICIENT_BALANCE,
         .depth = 0,
+        .logs = std::vector<CallFrame::Log>{},
     };
 
     EXPECT_EQ(call_frames[0], expected);

@@ -19,6 +19,7 @@
 #include <category/core/config.hpp>
 #include <category/execution/ethereum/core/address.hpp>
 #include <category/execution/ethereum/state3/state.hpp>
+#include <category/execution/ethereum/trace/call_tracer.hpp>
 #include <category/vm/evm/traits.hpp>
 
 #include <evmc/evmc.h>
@@ -33,6 +34,9 @@ bool init_trusted_setup();
 inline constexpr Address ripemd_address{3};
 
 template <Traits traits>
+bool is_eth_precompile(Address const &);
+
+template <Traits traits>
 bool is_precompile(Address const &);
 
 template <Traits traits>
@@ -40,7 +44,7 @@ std::optional<evmc::Result> check_call_eth_precompile(evmc_message const &);
 
 template <Traits traits>
 std::optional<evmc::Result>
-check_call_precompile(State &, evmc_message const &);
+check_call_precompile(State &, CallTracerBase &, evmc_message const &);
 
 using precompiled_gas_cost_fn = uint64_t(byte_string_view);
 

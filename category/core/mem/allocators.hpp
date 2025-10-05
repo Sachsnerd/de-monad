@@ -16,8 +16,9 @@
 #pragma once
 
 #include <category/core/assert.h>
-#include <category/core/cmemory.hpp>
+#include <category/core/config.hpp>
 
+#include <algorithm>
 #include <concepts>
 #include <memory>
 #include <span>
@@ -112,52 +113,6 @@ namespace allocators
         }
     };
 
-    //! \brief A STL allocator which uses `calloc`-`free` (i.e. allocated bytes
-    //! are returned zeroed)
-    template <class T>
-    struct calloc_free_allocator
-    {
-        using value_type = T;
-
-        [[nodiscard]] constexpr T *allocate(size_t const no)
-        {
-            MONAD_ASSERT(no < size_t(-1) / sizeof(T));
-            if constexpr (alignof(T) > alignof(max_align_t)) {
-                char *ret = reinterpret_cast<char *>(
-                    std::aligned_alloc(alignof(T), no * sizeof(T)));
-                cmemset(ret, char(0), no * sizeof(T));
-                return reinterpret_cast<T *>(ret);
-            }
-            return reinterpret_cast<T *>(std::calloc(no, sizeof(T)));
-        }
-
-        template <class U>
-        [[nodiscard]] constexpr T *allocate_overaligned(size_t const no)
-        {
-            MONAD_ASSERT(no < size_t(-1) / sizeof(T));
-            if constexpr (alignof(U) > alignof(max_align_t)) {
-                char *ret = reinterpret_cast<char *>(
-                    std::aligned_alloc(alignof(U), no * sizeof(T)));
-                cmemset(ret, char(0), no * sizeof(T));
-                return reinterpret_cast<T *>(ret);
-            }
-            return reinterpret_cast<T *>(std::calloc(no, sizeof(T)));
-        }
-
-        constexpr void deallocate(T *const p, size_t const)
-        {
-            std::free(p);
-        }
-    };
-
-    //! \brief Chooses `calloc_free_allocator` if
-    //! `construction_equals_all_bits_zero<T>` is true, else
-    //! `malloc_free_allocator`
-    template <class T, class U = T>
-    using calloc_free_allocator_if_opted_in = std::conditional_t<
-        construction_equals_all_bits_zero<T>::value, calloc_free_allocator<U>,
-        malloc_free_allocator<U>>;
-
     /**************************************************************************/
     //! \brief A unique ptr deleter for a STL allocator
     template <allocator Alloc, Alloc &(*GetAllocator)()>
@@ -188,16 +143,6 @@ namespace allocators
             TypeAlloc &type_alloc;
             RawAlloc &raw_alloc;
         };
-
-        template <class T>
-        inline type_raw_alloc_pair<
-            std::allocator<T>, calloc_free_allocator_if_opted_in<T, std::byte>>
-        GetStdAllocatorPair()
-        {
-            static std::allocator<T> a;
-            static calloc_free_allocator_if_opted_in<T, std::byte> b;
-            return {a, b};
-        }
     }
 
     template <class T>
@@ -223,7 +168,7 @@ namespace allocators
             typename decltype(GetAllocator())::type_allocator;
         using value_type = typename allocator_type::value_type;
 
-        constexpr unique_ptr_aliasing_allocator_deleter() {}
+        constexpr unique_ptr_aliasing_allocator_deleter() = default;
 
         constexpr void operator()(value_type *const p1) const
         {
@@ -323,7 +268,7 @@ namespace allocators
         if constexpr (!construction_equals_all_bits_zero<
                           typename type_allocator::value_type>::value) {
             // Trap use of region after end of type
-            cmemset(p2, std::byte{0xff}, storagebytes);
+            std::fill_n(p2, storagebytes, std::byte{0xff});
         }
 #endif
         try {

@@ -293,7 +293,6 @@ TEST_F(EvmTest, MaxDeltaOutOfBound)
 
     pre_execute(10'000, {});
     result_ = vm_.execute_native_entrypoint_raw(
-        chain_params,
         &host_.get_interface(),
         host_.to_context(),
         &msg_,
@@ -312,7 +311,6 @@ TEST_F(EvmTest, MaxDeltaOutOfBound)
 
     pre_execute(10'000, {});
     result_ = vm_.execute_native_entrypoint_raw(
-        chain_params,
         &host_.get_interface(),
         host_.to_context(),
         &msg_,
@@ -351,7 +349,6 @@ TEST_F(EvmTest, MinDeltaOutOfBound)
 
     pre_execute(10'000, {});
     result_ = vm_.execute_native_entrypoint_raw(
-        chain_params,
         &host_.get_interface(),
         host_.to_context(),
         &msg_,
@@ -370,7 +367,6 @@ TEST_F(EvmTest, MinDeltaOutOfBound)
 
     pre_execute(10'000, {});
     result_ = vm_.execute_native_entrypoint_raw(
-        chain_params,
         &host_.get_interface(),
         host_.to_context(),
         &msg_,
@@ -415,7 +411,6 @@ TEST_F(EvmTest, ShrCeilOffByOneRegression)
     MONAD_VM_ASSERT(ncode->entrypoint() != nullptr);
 
     vm.execute_native_entrypoint_raw(
-        chain_params,
         &host_.get_interface(),
         host_.to_context(),
         &msg,
@@ -499,6 +494,39 @@ TEST_F(EvmTest, EthCallOutOfGas)
 
     execute(30'000'000, code, data, Implementation::Interpreter);
     ASSERT_EQ(result_.status_code, EVMC_OUT_OF_GAS);
+}
+
+TEST_F(EvmTest, Int32BlockGasOverflow)
+{
+    using traits = monad::MonadTraits<MONAD_FIVE>;
+
+    std::vector<uint8_t> code;
+    for (size_t i = 0; i < 14 * 1024; ++i) {
+        code.push_back(PUSH0);
+        code.push_back(PUSH0);
+        code.push_back(CODESIZE);
+        code.push_back(CREATE);
+        code.push_back(POP);
+    }
+
+    auto const ir = basic_blocks::BasicBlocksIR::unsafe_from<traits>(code);
+    ASSERT_EQ(ir.blocks().size(), 1);
+    ASSERT_GT(
+        block_base_gas<traits>(ir.blocks()[0]),
+        std::numeric_limits<int32_t>::max());
+
+    auto const icode = make_shared_intercode(code);
+    auto const ncode = vm_.compiler().compile<traits>(icode);
+
+    pre_execute(20'000'000, {});
+    result_ = evmc::Result{vm_.execute_native_entrypoint_raw(
+        &host_.get_interface(),
+        host_.to_context(),
+        &msg_,
+        icode,
+        ncode->entrypoint())};
+
+    EXPECT_EQ(result_.status_code, EVMC_FAILURE);
 }
 
 INSTANTIATE_TEST_SUITE_P(

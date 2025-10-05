@@ -18,6 +18,7 @@
 #include <category/vm/evm/opcodes.hpp>
 #include <category/vm/evm/traits.hpp>
 #include <category/vm/interpreter/call_runtime.hpp>
+#include <category/vm/interpreter/debug.hpp>
 #include <category/vm/interpreter/instructions_fwd.hpp>
 #include <category/vm/interpreter/push.hpp>
 #include <category/vm/interpreter/stack.hpp>
@@ -50,6 +51,9 @@
             compiler::opcode_table<traits>[(OP)].min_stack;                    \
                                                                                \
         ++instr_ptr;                                                           \
+        if constexpr (debug_enabled) {                                         \
+            trace(analysis, gas_remaining, instr_ptr);                         \
+        }                                                                      \
         MONAD_VM_MUST_TAIL return instruction_table<traits>[*instr_ptr](       \
             ctx,                                                               \
             analysis,                                                          \
@@ -67,6 +71,9 @@
             compiler::opcode_table<traits>[(OP)].min_stack;                    \
                                                                                \
         instr_ptr += (((OP) - PUSH0) + 1);                                     \
+        if constexpr (debug_enabled) {                                         \
+            trace(analysis, gas_remaining, instr_ptr);                         \
+        }                                                                      \
         MONAD_VM_MUST_TAIL return instruction_table<traits>[*instr_ptr](       \
             ctx,                                                               \
             analysis,                                                          \
@@ -967,13 +974,13 @@ namespace monad::vm::interpreter
         runtime::uint256_t const *stack_bottom, runtime::uint256_t *stack_top,
         std::int64_t gas_remaining, std::uint8_t const *instr_ptr)
     {
-        check_requirements<GAS, traits>(
+        check_requirements<GASPRICE, traits>(
             ctx, analysis, stack_bottom, stack_top, gas_remaining);
         push(
             stack_top,
             runtime::uint256_from_bytes32(ctx.env.tx_context.tx_gas_price));
 
-        MONAD_VM_NEXT(GAS);
+        MONAD_VM_NEXT(GASPRICE);
     }
 
     template <Traits traits>
@@ -1505,6 +1512,9 @@ namespace monad::vm::interpreter
         auto const &target = pop(stack_top);
         auto const *const new_ip = jump_impl(ctx, analysis, target);
 
+        if constexpr (debug_enabled) {
+            trace(analysis, gas_remaining, new_ip);
+        }
         MONAD_VM_MUST_TAIL return instruction_table<traits>[*new_ip](
             ctx, analysis, stack_bottom, stack_top, gas_remaining, new_ip);
     }
@@ -1522,12 +1532,17 @@ namespace monad::vm::interpreter
 
         if (cond) {
             auto const *const new_ip = jump_impl(ctx, analysis, target);
-
+            if constexpr (debug_enabled) {
+                trace(analysis, gas_remaining, new_ip);
+            }
             MONAD_VM_MUST_TAIL return instruction_table<traits>[*new_ip](
                 ctx, analysis, stack_bottom, stack_top, gas_remaining, new_ip);
         }
         else {
             ++instr_ptr;
+            if constexpr (debug_enabled) {
+                trace(analysis, gas_remaining, instr_ptr);
+            }
             MONAD_VM_MUST_TAIL return instruction_table<traits>[*instr_ptr](
                 ctx,
                 analysis,

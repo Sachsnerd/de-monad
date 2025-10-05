@@ -34,6 +34,7 @@
 #include <category/execution/monad/staking/util/constants.hpp>
 #include <category/execution/monad/staking/util/secp256k1.hpp>
 #include <category/execution/monad/staking/util/staking_error.hpp>
+#include <category/execution/monad/system_sender.hpp>
 #include <category/vm/vm.hpp>
 
 #include <test_resource_data.h>
@@ -213,8 +214,7 @@ namespace
     }
 
     byte_string craft_undelegate_input(
-        u64_be const val_id, uint256_t const &amount,
-        uint8_t const withdrawal_id)
+        u64_be const val_id, uint256_t const &amount, u8_be const withdrawal_id)
     {
         AbiEncoder encoder;
         encoder.add_uint(val_id);
@@ -224,7 +224,7 @@ namespace
     }
 
     byte_string
-    craft_withdraw_input(u64_be const val_id, uint8_t const withdrawal_id)
+    craft_withdraw_input(u64_be const val_id, u8_be const withdrawal_id)
     {
         AbiEncoder encoder;
         encoder.add_uint(val_id);
@@ -250,7 +250,8 @@ struct Stake : public ::testing::Test
     TrieDb tdb{db};
     BlockState bs{tdb, vm};
     State state{bs, Incarnation{0, 0}};
-    StakingContract contract{state};
+    NoopCallTracer call_tracer{};
+    StakingContract contract{state, call_tracer};
 
     void SetUp() override
     {
@@ -393,8 +394,8 @@ struct Stake : public ::testing::Test
     }
 
     Result<void> undelegate(
-        u64_be const val_id, Address const &address,
-        uint8_t const withdrawal_id, uint256_t const &amount)
+        u64_be const val_id, Address const &address, u8_be const withdrawal_id,
+        uint256_t const &amount)
     {
         auto const input =
             craft_undelegate_input(val_id, amount, withdrawal_id);
@@ -406,8 +407,7 @@ struct Stake : public ::testing::Test
     }
 
     Result<void> withdraw(
-        u64_be const val_id, Address const &address,
-        uint8_t const withdrawal_id)
+        u64_be const val_id, Address const &address, u8_be const withdrawal_id)
     {
         auto const input = craft_withdraw_input(val_id, withdrawal_id);
         state.push();
@@ -1568,27 +1568,27 @@ TEST_F(Stake, validator_exit_multiple_delegations)
     EXPECT_EQ(get_balance(auth_address), 0);
     EXPECT_FALSE(withdraw(val2.id, auth_address, 1).has_error());
     EXPECT_EQ(
-        get_balance(auth_address), ACTIVE_VALIDATOR_STAKE + 980392156862745098);
+        get_balance(auth_address), ACTIVE_VALIDATOR_STAKE + 996015936254980079);
 
     EXPECT_FALSE(claim_rewards(val2.id, other_address).has_error());
-    EXPECT_EQ(get_balance(other_address), 19607843137254901);
+    EXPECT_EQ(get_balance(other_address), 3984063745019920);
 
     EXPECT_FALSE(claim_rewards(val1.id, auth_address).has_error());
     EXPECT_FALSE(withdraw(val1.id, auth_address, 1).has_error());
     EXPECT_EQ(
         get_balance(auth_address),
         ACTIVE_VALIDATOR_STAKE + (REWARD - 1) + ACTIVE_VALIDATOR_STAKE +
-            980392156862745098);
+            996015936254980079);
 }
 
 TEST_F(Stake, validator_exit_multiple_delegations_full_withdrawal)
 {
+    constexpr auto smaller_stake = 1'000'000 * MON;
     auto const auth_address = 0xdeadbeef_address;
     auto const other_address = 0xdeaddead_address;
     EXPECT_EQ(get_balance(auth_address), 0);
 
-    auto res =
-        add_validator(auth_address, MIN_VALIDATE_STAKE, 0, bytes32_t{0x1000});
+    auto res = add_validator(auth_address, smaller_stake, 0, bytes32_t{0x1000});
     ASSERT_FALSE(res.has_error());
     auto const val1 = res.value();
 
@@ -1600,8 +1600,7 @@ TEST_F(Stake, validator_exit_multiple_delegations_full_withdrawal)
 
     EXPECT_FALSE(syscall_snapshot().has_error());
 
-    res =
-        add_validator(other_address, MIN_VALIDATE_STAKE, 0, bytes32_t{0x1001});
+    res = add_validator(other_address, smaller_stake, 0, bytes32_t{0x1001});
     ASSERT_FALSE(res.has_error());
     auto const val2 = res.value();
 
@@ -1624,20 +1623,17 @@ TEST_F(Stake, validator_exit_multiple_delegations_full_withdrawal)
     EXPECT_FALSE(undelegate(val2.id, auth_address, 1, ACTIVE_VALIDATOR_STAKE)
                      .has_error());
 
-    EXPECT_FALSE(delegate(
-                     val1.id,
-                     auth_address,
-                     ACTIVE_VALIDATOR_STAKE - MIN_VALIDATE_STAKE - 1)
-                     .has_error());
+    EXPECT_FALSE(
+        delegate(
+            val1.id, auth_address, ACTIVE_VALIDATOR_STAKE - smaller_stake - 1)
+            .has_error());
 
     EXPECT_FALSE(syscall_snapshot().has_error());
-    ;
 
-    EXPECT_FALSE(delegate(
-                     val2.id,
-                     auth_address,
-                     ACTIVE_VALIDATOR_STAKE - MIN_VALIDATE_STAKE - 1)
-                     .has_error());
+    EXPECT_FALSE(
+        delegate(
+            val2.id, auth_address, ACTIVE_VALIDATOR_STAKE - smaller_stake - 1)
+            .has_error());
 
     inc_epoch();
     skip_to_next_epoch();
@@ -1648,22 +1644,22 @@ TEST_F(Stake, validator_exit_multiple_delegations_full_withdrawal)
     EXPECT_FALSE(claim_rewards(val2.id, auth_address).has_error());
     EXPECT_FALSE(withdraw(val2.id, auth_address, 1).has_error());
     EXPECT_EQ(
-        get_balance(auth_address), ACTIVE_VALIDATOR_STAKE + 980392156862745098);
+        get_balance(auth_address), ACTIVE_VALIDATOR_STAKE + 961538461538461538);
 
     EXPECT_FALSE(claim_rewards(val2.id, other_address).has_error());
-    EXPECT_EQ(get_balance(other_address), 19607843137254901);
+    EXPECT_EQ(get_balance(other_address), 38461538461538461);
 
     EXPECT_FALSE(claim_rewards(val1.id, auth_address).has_error());
     EXPECT_FALSE(withdraw(val1.id, auth_address, 1).has_error());
     EXPECT_EQ(
         get_balance(auth_address),
         ACTIVE_VALIDATOR_STAKE + (REWARD - 1) + ACTIVE_VALIDATOR_STAKE +
-            980392156862745098);
+            961538461538461538);
 
     check_delegator_c_state(val1, auth_address, ACTIVE_VALIDATOR_STAKE - 1, 0);
     check_delegator_c_state(
-        val2, auth_address, ACTIVE_VALIDATOR_STAKE - MIN_VALIDATE_STAKE - 1, 0);
-    check_delegator_c_state(val2, other_address, MIN_VALIDATE_STAKE, 0);
+        val2, auth_address, ACTIVE_VALIDATOR_STAKE - smaller_stake - 1, 0);
+    check_delegator_c_state(val2, other_address, smaller_stake, 0);
 
     EXPECT_FALSE(
         undelegate(val1.id, auth_address, 1, ACTIVE_VALIDATOR_STAKE - 1)
@@ -1673,7 +1669,7 @@ TEST_F(Stake, validator_exit_multiple_delegations_full_withdrawal)
                      val2.id,
                      auth_address,
                      1,
-                     ACTIVE_VALIDATOR_STAKE - MIN_VALIDATE_STAKE - 1)
+                     ACTIVE_VALIDATOR_STAKE - smaller_stake - 1)
                      .has_error());
 
     skip_to_next_epoch();
@@ -1685,15 +1681,15 @@ TEST_F(Stake, validator_exit_multiple_delegations_full_withdrawal)
     EXPECT_FALSE(withdraw(val2.id, auth_address, 1).has_error());
 
     EXPECT_FALSE(claim_rewards(val2.id, other_address).has_error());
-    EXPECT_EQ(get_balance(other_address), 19607843137254901);
+    EXPECT_EQ(get_balance(other_address), 38461538461538461);
 
     EXPECT_FALSE(claim_rewards(val1.id, auth_address).has_error());
     EXPECT_FALSE(withdraw(val1.id, auth_address, 1).has_error());
     EXPECT_EQ(
         get_balance(auth_address),
         ACTIVE_VALIDATOR_STAKE + (REWARD - 1) + ACTIVE_VALIDATOR_STAKE +
-            980392156862745098 + ACTIVE_VALIDATOR_STAKE - 1 +
-            ACTIVE_VALIDATOR_STAKE - MIN_VALIDATE_STAKE - 1);
+            961538461538461538 + ACTIVE_VALIDATOR_STAKE - 1 +
+            ACTIVE_VALIDATOR_STAKE - smaller_stake - 1);
 }
 
 TEST_F(Stake, validator_exit_claim_rewards)
@@ -1701,23 +1697,21 @@ TEST_F(Stake, validator_exit_claim_rewards)
     auto const auth_address = 0xdeadbeef_address;
     auto const other_address = 0xdeaddead_address;
 
-    auto res =
-        add_validator(auth_address, MIN_VALIDATE_STAKE, 0, bytes32_t{0x1000});
+    constexpr auto smaller_stake = 1'000'000 * MON;
+    constexpr auto larger_stake = 50'000'000 * MON;
+    auto res = add_validator(auth_address, smaller_stake, 0, bytes32_t{0x1000});
     ASSERT_FALSE(res.has_error());
     auto const val1 = res.value();
 
-    EXPECT_FALSE(
-        delegate(val1.id, auth_address, ACTIVE_VALIDATOR_STAKE).has_error());
+    EXPECT_FALSE(delegate(val1.id, auth_address, larger_stake).has_error());
 
     EXPECT_FALSE(syscall_snapshot().has_error());
 
-    res =
-        add_validator(other_address, MIN_VALIDATE_STAKE, 0, bytes32_t{0x1001});
+    res = add_validator(other_address, smaller_stake, 0, bytes32_t{0x1001});
     ASSERT_FALSE(res.has_error());
     auto const val2 = res.value();
 
-    EXPECT_FALSE(
-        delegate(val2.id, auth_address, ACTIVE_VALIDATOR_STAKE).has_error());
+    EXPECT_FALSE(delegate(val2.id, auth_address, larger_stake).has_error());
 
     inc_epoch();
     skip_to_next_epoch();
@@ -1726,10 +1720,10 @@ TEST_F(Stake, validator_exit_claim_rewards)
     EXPECT_FALSE(syscall_reward(val1.sign_address).has_error());
     EXPECT_FALSE(syscall_reward(val2.sign_address).has_error());
 
-    EXPECT_FALSE(undelegate(val1.id, auth_address, 1, ACTIVE_VALIDATOR_STAKE)
-                     .has_error());
-    EXPECT_FALSE(undelegate(val2.id, auth_address, 1, ACTIVE_VALIDATOR_STAKE)
-                     .has_error());
+    EXPECT_FALSE(
+        undelegate(val1.id, auth_address, 1, larger_stake).has_error());
+    EXPECT_FALSE(
+        undelegate(val2.id, auth_address, 1, larger_stake).has_error());
 
     skip_to_next_epoch();
 
@@ -1748,27 +1742,25 @@ TEST_F(Stake, validator_exit_claim_rewards)
 
 TEST_F(Stake, validator_exit_compound)
 {
+    constexpr auto smaller_stake = 1'000'000 * MON;
+    constexpr auto larger_stake = 50'000'000 * MON;
     auto const auth_address = 0xdeadbeef_address;
     auto const other_address = 0xdeaddead_address;
     auto const reward = 60 * MON;
 
-    auto res =
-        add_validator(auth_address, MIN_VALIDATE_STAKE, 0, bytes32_t{0x1000});
+    auto res = add_validator(auth_address, smaller_stake, 0, bytes32_t{0x1000});
     ASSERT_FALSE(res.has_error());
     auto const val1 = res.value();
 
-    EXPECT_FALSE(
-        delegate(val1.id, auth_address, ACTIVE_VALIDATOR_STAKE).has_error());
+    EXPECT_FALSE(delegate(val1.id, auth_address, larger_stake).has_error());
 
     EXPECT_FALSE(syscall_snapshot().has_error());
 
-    res =
-        add_validator(other_address, MIN_VALIDATE_STAKE, 0, bytes32_t{0x1001});
+    res = add_validator(other_address, smaller_stake, 0, bytes32_t{0x1001});
     ASSERT_FALSE(res.has_error());
     auto const val2 = res.value();
 
-    EXPECT_FALSE(
-        delegate(val2.id, auth_address, ACTIVE_VALIDATOR_STAKE).has_error());
+    EXPECT_FALSE(delegate(val2.id, auth_address, larger_stake).has_error());
 
     inc_epoch();
     skip_to_next_epoch();
@@ -1781,10 +1773,10 @@ TEST_F(Stake, validator_exit_compound)
     EXPECT_FALSE(compound(val2.id, auth_address).has_error());
     EXPECT_FALSE(compound(val2.id, other_address).has_error());
 
-    EXPECT_FALSE(undelegate(val1.id, auth_address, 1, ACTIVE_VALIDATOR_STAKE)
-                     .has_error());
-    EXPECT_FALSE(undelegate(val2.id, auth_address, 1, ACTIVE_VALIDATOR_STAKE)
-                     .has_error());
+    EXPECT_FALSE(
+        undelegate(val1.id, auth_address, 1, larger_stake).has_error());
+    EXPECT_FALSE(
+        undelegate(val2.id, auth_address, 1, larger_stake).has_error());
 
     skip_to_next_epoch();
 
@@ -1804,14 +1796,13 @@ TEST_F(Stake, validator_exit_compound)
     check_delegator_c_state(
         val2,
         other_address,
-        MIN_VALIDATE_STAKE + expected_reward1,
+        smaller_stake + expected_reward1,
         0); // didn't undelegate
 
     check_delegator_c_state(
         val2, auth_address, expected_reward2, 0); // undelegated
 
-    check_delegator_c_state(
-        val1, auth_address, MIN_VALIDATE_STAKE + reward - 1, 0);
+    check_delegator_c_state(val1, auth_address, smaller_stake + reward - 1, 0);
 }
 
 TEST_F(Stake, validator_removes_self)
@@ -2090,7 +2081,11 @@ TEST_F(Stake, validator_external_rewards_failure_conditions)
         StakingError::UnknownValidator);
 
     EXPECT_EQ(
-        external_reward(val.id, auth_address, MON - 1).assume_error(),
+        external_reward(val.id, auth_address, 5).assume_error(),
+        StakingError::ExternalRewardTooSmall);
+    EXPECT_EQ(
+        external_reward(val.id, auth_address, MIN_EXTERNAL_REWARD - 1)
+            .assume_error(),
         StakingError::ExternalRewardTooSmall);
 
     EXPECT_EQ(
@@ -4679,4 +4674,141 @@ TEST_F(Stake, undelegate_dust)
     EXPECT_FALSE(
         withdraw(val.id, delegator, 1 /* withdrawal id */).has_error());
     EXPECT_EQ(get_balance(delegator), DUST_THRESHOLD + 300);
+}
+
+//////////////////
+// Events Tests //
+//////////////////
+
+TEST_F(Stake, events)
+{
+    auto const auth = 0xdeadbeef_address;
+
+    // Add validator with enough stake to activate immediately
+    //   1. Validator created
+    //   2. Validator status changed to active.
+    //   3. Delegate event
+    auto const res = add_validator(auth, ACTIVE_VALIDATOR_STAKE);
+    ASSERT_FALSE(res.has_error());
+    auto const val = res.value();
+    size_t seen_events = 0;
+    EXPECT_EQ(state.logs().size(), 3);
+    seen_events += 3;
+
+    // Change to new commission
+    //  1. Commission changed event
+    ASSERT_FALSE(change_commission(val.id, auth, MON * 25 / 100).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events + 1);
+    seen_events += 1;
+
+    // Change to the same commission. No events emitted
+    ASSERT_FALSE(change_commission(val.id, auth, MON * 25 / 100).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events);
+
+    // Epoch change
+    //  1. Epoch changed event
+    skip_to_next_epoch();
+    EXPECT_EQ(state.logs().size(), seen_events + 1);
+    seen_events += 1;
+
+    // Undelegate, setting validator inactive
+    //   1. Undelegate event
+    //   2. Validator status changed to inactive
+    ASSERT_FALSE(undelegate(val.id, auth, 1, 50 * MON).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events + 2);
+    seen_events += 2;
+
+    // Undelegate without changing validator state
+    //   1. Undelegate event
+    ASSERT_FALSE(undelegate(val.id, auth, 2, 10 * MON).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events + 1);
+    seen_events += 1;
+
+    // Delegate without changing validator state
+    //  1. Delegate event
+    ASSERT_FALSE(delegate(val.id, auth, 10 * MON).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events + 1);
+    seen_events += 1;
+
+    // Delegate, setting validator active
+    //  1. Delegate event
+    //  2. Validator status changed
+    ASSERT_FALSE(delegate(val.id, auth, 50 * MON).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events + 2);
+    seen_events += 2;
+
+    // Claim with no rewards. No events emitted
+    ASSERT_FALSE(claim_rewards(val.id, auth).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events);
+
+    // Reward syscall
+    //  1. Reward originating from the contract
+    ASSERT_FALSE(syscall_reward(val.sign_address).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events + 1);
+    EXPECT_EQ(state.logs().back().topics[2], abi_encode_address(SYSTEM_SENDER));
+    seen_events += 1;
+
+    // Claim with nonzero rewards.
+    //   1. Claim event
+    ASSERT_FALSE(claim_rewards(val.id, auth).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events + 1);
+    seen_events += 1;
+
+    // External reward
+    //  1. Reward originating from the sender
+    ASSERT_FALSE(external_reward(val.id, auth, 5 * MON).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events + 1);
+    EXPECT_EQ(state.logs().back().topics[2], abi_encode_address(auth));
+    seen_events += 1;
+
+    // Compound without changing validator state
+    //  1. Claim event
+    //  2. Delegate event
+    ASSERT_FALSE(compound(val.id, auth).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events + 2);
+    seen_events += 2;
+
+    // Compound with no rewards.  Note that all reward for `auth` were just
+    // compounded in the last step. No events emitted.
+    ASSERT_FALSE(compound(val.id, auth).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events);
+
+    // Withdraw one of the pending delegations
+    //   1. Withdraw event
+    skip_to_next_epoch();
+    skip_to_next_epoch();
+    seen_events += 2; // two epoch changed events
+    ASSERT_FALSE(withdraw(val.id, auth, 1).has_error());
+    EXPECT_EQ(state.logs().size(), seen_events + 1);
+    seen_events += 1;
+
+    // All logs should come from the staking contract
+    for (auto const &log : state.logs()) {
+        EXPECT_EQ(log.address, STAKING_CA);
+    }
+
+    // compute data hash and topics hash
+    byte_string data_blob;
+    byte_string topics_blob;
+    for (auto const &log : state.logs()) {
+        topics_blob += abi_encode_uint<u64_be>(log.topics.size());
+        for (bytes32_t const &topic : log.topics) {
+            topics_blob += byte_string{topic};
+        }
+        data_blob += abi_encode_uint<u64_be>(log.data.size());
+        data_blob += log.data;
+    }
+    auto const data_hash = to_bytes(blake3(data_blob));
+    auto const topics_hash = to_bytes(blake3(topics_blob));
+
+    // If intentionally bumping the hashes, this script tidies the gtest output:
+    // awk '{gsub(/[- ]/, ""); print}'
+    EXPECT_EQ(
+        data_hash,
+        0x963BADF92D0C30030E575232A2FDF1333D60D7DE3B6FB275E61451C108F0E2D3_bytes32)
+        << "Staking event change requires a hardfork!";
+    EXPECT_EQ(
+        topics_hash,
+        0x698CB2EE95A576037A3D5EDDA5FFA5ABC8741E6DB69883C899CC93C0EBB55AB6_bytes32)
+        << "Staking event change requires a hardfork!";
 }
